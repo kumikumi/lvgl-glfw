@@ -12,14 +12,32 @@ static lv_draw_buf_t draw_buf;
 static lv_color32_t *buf;
 static lv_display_t *disp;
 static lv_obj_t *resolution_label;
+static lv_obj_t *frame_counter_label;
+static lv_obj_t *selectable_label;
+static uint32_t frame_count = 0;
+
+static int selection_start = LV_LABEL_TEXT_SELECTION_OFF;
+static int selection_end = LV_LABEL_TEXT_SELECTION_OFF;
 
 static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
-    // Update the texture with the new frame buffer content
+    int32_t width = lv_display_get_horizontal_resolution(disp);
+    int32_t height = lv_display_get_vertical_resolution(disp);
+
+    // Calculate the start position of the updated area in px_map
+    int32_t stride = width * sizeof(lv_color32_t);  // Bytes per row
+    uint8_t *start_pos = px_map + (area->y1 * stride) + (area->x1 * sizeof(lv_color32_t));
+
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, area->x1, area->y1, 
-                    lv_area_get_width(area), lv_area_get_height(area), 
-                    GL_BGRA, GL_UNSIGNED_BYTE, px_map);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, width);  // Set the row length to the full width of the texture
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);  // Ensure 1-byte alignment
+
+    glTexSubImage2D(GL_TEXTURE_2D, 0, area->x1, area->y1,
+                    lv_area_get_width(area), lv_area_get_height(area),
+                    GL_RGBA, GL_UNSIGNED_BYTE, start_pos);
+
+    // Reset the row length
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
     lv_display_flush_ready(disp);
 }
@@ -44,6 +62,13 @@ static void update_resolution_text(int width, int height)
     lv_label_set_text(resolution_label, buf);
 }
 
+static void update_frame_counter()
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Frames: %u", frame_count++);
+    lv_label_set_text(frame_counter_label, buf);
+}
+
 static void window_resize_callback(GLFWwindow* window, int width, int height)
 {
     // Update OpenGL viewport
@@ -66,6 +91,59 @@ static void window_resize_callback(GLFWwindow* window, int width, int height)
 
     // Update the resolution text
     update_resolution_text(width, height);
+}
+
+static void label_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target(e);
+    lv_point_t p;
+
+    if(code == LV_EVENT_PRESSED) {
+        lv_indev_get_point(lv_indev_active(), &p);
+        selection_start = lv_label_get_letter_on(obj, &p, false);
+        selection_end = LV_LABEL_TEXT_SELECTION_OFF;
+        lv_label_set_text_selection_start(obj, selection_start);
+        lv_label_set_text_selection_end(obj, selection_end);
+    }
+    else if(code == LV_EVENT_PRESSING) {
+        lv_indev_get_point(lv_indev_active(), &p);
+        selection_end = lv_label_get_letter_on(obj, &p, false);
+        lv_label_set_text_selection_end(obj, selection_end);
+    }
+    else if(code == LV_EVENT_RELEASED) {
+        if(selection_start == selection_end) {
+            selection_start = LV_LABEL_TEXT_SELECTION_OFF;
+            selection_end = LV_LABEL_TEXT_SELECTION_OFF;
+            lv_label_set_text_selection_start(obj, LV_LABEL_TEXT_SELECTION_OFF);
+            lv_label_set_text_selection_end(obj, LV_LABEL_TEXT_SELECTION_OFF);
+        }
+    }
+}
+
+static void create_gradient_background(lv_obj_t * parent)
+{
+    static const lv_color_t grad_colors[2] = {
+        LV_COLOR_MAKE(0x9B, 0x18, 0x42),
+        LV_COLOR_MAKE(0x00, 0x00, 0x00),
+    };
+
+    int32_t width = lv_display_get_horizontal_resolution(NULL);
+    int32_t height = lv_display_get_vertical_resolution(NULL);
+
+    static lv_style_t style;
+    lv_style_init(&style);
+
+    static lv_grad_dsc_t grad;
+    lv_gradient_init_stops(&grad, grad_colors, NULL, NULL, sizeof(grad_colors) / sizeof(lv_color_t));
+    lv_grad_radial_init(&grad, LV_GRAD_CENTER, LV_GRAD_CENTER, LV_GRAD_RIGHT, LV_GRAD_BOTTOM, LV_GRAD_EXTEND_PAD);
+    lv_style_set_bg_grad(&style, &grad);
+
+    lv_obj_t * obj = lv_obj_create(parent);
+    lv_obj_add_style(obj, &style, 0);
+    lv_obj_set_size(obj, width, height);
+    lv_obj_center(obj);
+    lv_obj_move_to_index(obj, 0);  // Move to the background
 }
 
 int main(void)
@@ -108,15 +186,25 @@ int main(void)
     lv_indev_set_read_cb(mouse_indev, my_mouse_read);
     lv_indev_set_user_data(mouse_indev, window);
 
+    // Create gradient background
+    create_gradient_background(lv_scr_act());
+
     // Create a label for the resolution
     resolution_label = lv_label_create(lv_scr_act());
     lv_obj_align(resolution_label, LV_ALIGN_TOP_LEFT, 10, 10);
     update_resolution_text(WINDOW_WIDTH, WINDOW_HEIGHT);
 
-    // Create a label
-    lv_obj_t * label = lv_label_create(lv_scr_act());
-    lv_label_set_text(label, "Hello, World!");
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -40);
+    // Create a label for the frame counter
+    frame_counter_label = lv_label_create(lv_scr_act());
+    lv_obj_align(frame_counter_label, LV_ALIGN_TOP_LEFT, 10, 40);
+    update_frame_counter();
+
+    // Create a selectable label
+    selectable_label = lv_label_create(lv_scr_act());
+    lv_label_set_text(selectable_label, "Hello, World! This text is selectable.");
+    lv_obj_align(selectable_label, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_add_flag(selectable_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(selectable_label, label_event_cb, LV_EVENT_ALL, NULL);
 
     // Create three buttons with different colors
     lv_obj_t * btn_red = lv_btn_create(lv_scr_act());
@@ -158,6 +246,9 @@ int main(void)
         glTexCoord2f(1, 0); glVertex2f(1, 1);
         glTexCoord2f(0, 0); glVertex2f(-1, 1);
         glEnd();
+
+        // Update the frame counter
+        update_frame_counter();
 
         glfwSwapBuffers(window);
         glfwPollEvents();
