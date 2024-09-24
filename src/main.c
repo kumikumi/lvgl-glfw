@@ -1,5 +1,6 @@
 #define GL_SILENCE_DEPRECATION
 #include <stdio.h>
+#include <stdlib.h>
 #include <GLFW/glfw3.h>
 #include "lvgl.h"
 
@@ -8,7 +9,9 @@
 
 static GLuint texture;
 static lv_draw_buf_t draw_buf;
-static lv_color32_t buf[WINDOW_WIDTH * WINDOW_HEIGHT];
+static lv_color32_t *buf;
+static lv_display_t *disp;
+static lv_obj_t *resolution_label;
 
 static void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
@@ -34,15 +37,35 @@ static void my_mouse_read(lv_indev_t * indev, lv_indev_data_t * data)
                   LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
-static void btn_event_cb(lv_event_t * e)
+static void update_resolution_text(int width, int height)
 {
-    lv_obj_t * btn = lv_event_get_target(e);
-    lv_obj_t * label = lv_obj_get_child(lv_scr_act(), 0);
-    static int cnt = 0;
-    cnt++;
     char buf[32];
-    snprintf(buf, sizeof(buf), "Button clicked %d times", cnt);
-    lv_label_set_text(label, buf);
+    snprintf(buf, sizeof(buf), "Resolution: %dx%d", width, height);
+    lv_label_set_text(resolution_label, buf);
+}
+
+static void window_resize_callback(GLFWwindow* window, int width, int height)
+{
+    // Update OpenGL viewport
+    glViewport(0, 0, width, height);
+
+    // Update LVGL display resolution
+    lv_display_set_resolution(disp, width, height);
+
+    // Resize the draw buffer
+    lv_draw_buf_destroy(&draw_buf);
+    buf = realloc(buf, width * height * sizeof(lv_color32_t));
+    lv_draw_buf_init(&draw_buf, width, height, LV_COLOR_FORMAT_NATIVE, 
+                     width * sizeof(lv_color32_t),
+                     buf, width * height * sizeof(lv_color32_t));
+    lv_display_set_buffers(disp, buf, NULL, width * height * sizeof(lv_color32_t), LV_DISPLAY_RENDER_MODE_DIRECT);
+
+    // Resize the OpenGL texture
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    // Update the resolution text
+    update_resolution_text(width, height);
 }
 
 int main(void)
@@ -60,17 +83,19 @@ int main(void)
     }
 
     glfwMakeContextCurrent(window);
+    glfwSetWindowSizeCallback(window, window_resize_callback);
 
     // Initialize LVGL
     lv_init();
 
     // Initialize the display buffer
+    buf = malloc(WINDOW_WIDTH * WINDOW_HEIGHT * sizeof(lv_color32_t));
     lv_draw_buf_init(&draw_buf, WINDOW_WIDTH, WINDOW_HEIGHT, LV_COLOR_FORMAT_NATIVE, 
                      WINDOW_WIDTH * sizeof(lv_color32_t),
                      buf, WINDOW_WIDTH * WINDOW_HEIGHT * sizeof(lv_color32_t));
 
     // Initialize the display driver
-    lv_display_t * disp = lv_display_create(WINDOW_WIDTH, WINDOW_HEIGHT);
+    disp = lv_display_create(WINDOW_WIDTH, WINDOW_HEIGHT);
     lv_display_set_flush_cb(disp, my_disp_flush);
     lv_display_set_buffers(disp, buf, NULL, WINDOW_WIDTH * WINDOW_HEIGHT * sizeof(lv_color32_t), LV_DISPLAY_RENDER_MODE_DIRECT);
 
@@ -82,6 +107,11 @@ int main(void)
     lv_indev_set_type(mouse_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(mouse_indev, my_mouse_read);
     lv_indev_set_user_data(mouse_indev, window);
+
+    // Create a label for the resolution
+    resolution_label = lv_label_create(lv_scr_act());
+    lv_obj_align(resolution_label, LV_ALIGN_TOP_LEFT, 10, 10);
+    update_resolution_text(WINDOW_WIDTH, WINDOW_HEIGHT);
 
     // Create a label
     lv_obj_t * label = lv_label_create(lv_scr_act());
@@ -100,17 +130,6 @@ int main(void)
     lv_obj_t * btn_blue = lv_btn_create(lv_scr_act());
     lv_obj_align(btn_blue, LV_ALIGN_CENTER, 100, 40);
     lv_obj_set_style_bg_color(btn_blue, lv_color_hex(0x0000FF), 0);
-
-    // Create a button
-    // lv_obj_t * btn = lv_btn_create(lv_scr_act());
-    // lv_obj_align(btn, LV_ALIGN_CENTER, 0, 40);
-    // lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
-
-    // // Set the button color to red (#FF0000)
-    // lv_obj_set_style_bg_color(btn, lv_color_hex(0xFF0000), 0);
-
-    // lv_obj_t * btn_label = lv_label_create(btn);
-    // lv_label_set_text(btn_label, "Click me!");
 
     // Create an OpenGL texture
     glGenTextures(1, &texture);
@@ -146,6 +165,8 @@ int main(void)
         lv_tick_inc(16); // Assuming 60 FPS
     }
 
+    // Clean up
+    free(buf);
     glfwTerminate();
     return 0;
 }
